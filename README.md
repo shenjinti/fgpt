@@ -1,6 +1,6 @@
 # A free reverse proxy and CLI tool for OpenAI GPT-3.5-turbo.
 It allows you to use the GPT-3.5 API without needing to sign up for an API key or pay for usage. 
-
+**[WIP]** 
 
 ## Installation
 ```bash
