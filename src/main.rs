@@ -1,15 +1,66 @@
 use clap::Parser;
-use std::io::Write;
+use std::{io::Write, sync::Arc};
 
 mod cli;
 mod proxy;
 mod rgpt;
 
+#[derive(Clone)]
+pub(crate) struct AppState {
+    pub code: bool,
+    pub model: String,
+    pub lang: String,
+    pub proxy: Option<String>,
+    pub qusetion: Option<String>,
+}
+
+impl AppState {
+    pub fn new(args: &Args) -> Self {
+        Self {
+            code: args.code,
+            qusetion: args.question.clone(),
+            proxy: args.proxy.clone(),
+            lang: args.lang.as_ref().unwrap_or(&"en-US".to_string()).clone(),
+            model: args
+                .model
+                .as_ref()
+                .unwrap_or(&"text-davinci-002-render-sha".to_string())
+                .clone(),
+        }
+    }
+    pub fn create_device_id(&self) -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+}
+type StateRef = Arc<AppState>;
+
 #[derive(Parser, Debug)]
 #[command(version)]
-struct Args {
+pub(crate) struct Args {
+    #[clap(help = "Your help message")]
+    question: Option<String>,
+    #[clap(
+        long,
+        default_value = "text-davinci-002-render-sha",
+        help = "Default model"
+    )]
+    model: Option<String>,
+
+    #[clap(long, default_value = "en-US", help = "Language")]
+    lang: Option<String>,
+
     #[clap(long, short, help = "Via proxy server address")]
     proxy: Option<String>,
+
+    #[clap(long, help = "The file to write the log to")]
+    log_file: Option<String>,
+
+    #[clap(
+        long,
+        default_value = "info",
+        help = "Log level: trace, debug, info, warn, error"
+    )]
+    log_level: String,
 
     #[cfg(feature = "cli")]
     #[clap(long, short, help = "Result as plain code")]
@@ -26,18 +77,6 @@ struct Args {
     #[cfg(feature = "proxy")]
     #[clap(long, short, help = "Serve the proxy at the given address")]
     serve: Option<String>,
-
-    #[cfg(feature = "proxy")]
-    #[clap(long, help = "The file to write the log to")]
-    log_file: Option<String>,
-
-    #[cfg(feature = "proxy")]
-    #[clap(
-        long,
-        default_value = "info",
-        help = "Log level: trace, debug, info, warn, error"
-    )]
-    log_level: String,
 
     #[cfg(feature = "proxy")]
     #[clap(long, default_value = "/v1")]
@@ -91,13 +130,17 @@ fn init_log(level: &String, is_test: bool, log_file_name: &Option<String>) {
 }
 
 #[tokio::main]
-pub async fn main() -> Result<(), std::io::Error> {
+pub async fn main() -> Result<(), crate::rgpt::Error> {
     let args = Args::parse();
     init_log(&args.log_level, false, &args.log_file);
 
+    let state = Arc::new(AppState::new(&args));
+
+    #[cfg(feature = "proxy")]
     if args.serve.is_some() {
-        proxy::serve(args).await
-    } else {
-        cli::run(args).await
+        return proxy::serve(state).await;
     }
+
+    #[cfg(feature = "cli")]
+    cli::run(state).await
 }
