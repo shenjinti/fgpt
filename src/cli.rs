@@ -1,18 +1,21 @@
 use crate::fgpt::{CompletionRequest, Message};
-use atty::Stream;
 use futures::StreamExt;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use tokio::select;
 
-pub async fn run_repl(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
-    let help_text = r#"Type `/help` for more information.
-Type `/exit` to exit the program.
-Type `/reset` to reset the conversation.
-    "#;
+const HELP_TEXT: &str = r"🎉 free GPT-3.5 cli tools | https://github.com/shenjinti/fgpt
 
-    println!("Ctrl-C to cancel, Ctrl-D to exit. \\ for a new line. ✨");
+Type `/help` for more information.
+Type '/exit' or <Ctrl-D> to exit the program.
+Type '/reset' to reset the conversation.
+
+Ctrl-C to cancel, Ctrl-D to exit. \ for a new line. ✨
+";
+
+pub async fn run_repl(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
+    println!("{}", HELP_TEXT);
 
     let mut rl = DefaultEditor::new()?;
     let mut prompt_text = ">> ".to_string();
@@ -29,7 +32,7 @@ Type `/reset` to reset the conversation.
                 match line {
                     "/exit" => break,
                     "/help" => {
-                        println!("{}", help_text);
+                        println!("{}", HELP_TEXT);
                         continue;
                     }
                     "/reset" => {
@@ -38,8 +41,10 @@ Type `/reset` to reset the conversation.
                         println!("Conversation reset. ✨");
                         continue;
                     }
+                    "" => continue,
                     _ => {}
                 }
+
                 if line.ends_with("\\") {
                     prompt_text = ".. ".to_string();
                     question.push_str(&line[..line.len() - 1]);
@@ -49,6 +54,7 @@ Type `/reset` to reset the conversation.
                     prompt_text = ">> ".to_string();
                     question.push_str(line);
                 }
+
                 rl.add_history_entry(&question).ok();
                 question = String::new();
 
@@ -71,14 +77,12 @@ Type `/reset` to reset the conversation.
                         last_message_id = Some(r.last_message_id);
                     }
                     _ = tokio::signal::ctrl_c() => {
+                        log::info!("Ctrl-C pressed. Exiting.");
                         break;
                     }
                 }
             }
-            Err(ReadlineError::Interrupted) => {
-                break;
-            }
-            Err(ReadlineError::Eof) => {
+            Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
                 break;
             }
             Err(err) => {
@@ -104,30 +108,24 @@ pub async fn run(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
         });
     }
 
-    match state.qusetion {
-        Some(ref q) => {
-            messages.push(Message {
-                role: "user".to_string(),
-                content: q.clone(),
-                content_type: "text".to_string(),
-            });
-        }
-        None => {}
+    if let Some(ref q) = state.qusetion {
+        messages.push(Message {
+            role: "user".to_string(),
+            content: q.clone(),
+            content_type: "text".to_string(),
+        });
     }
 
-    match state.input_file {
-        Some(ref file) => {
-            let content = std::fs::read_to_string(file)?;
-            messages.push(Message {
-                role: "user".to_string(),
-                content,
-                content_type: "text".to_string(),
-            });
-        }
-        None => {}
+    if let Some(ref file) = state.input_file {
+        let content = std::fs::read_to_string(file)?;
+        messages.push(Message {
+            role: "user".to_string(),
+            content,
+            content_type: "text".to_string(),
+        });
     }
 
-    if !atty::is(Stream::Stdin) {
+    if !std::io::stdin().is_terminal() {
         // it may be a pipe or a file
         let mut content = String::new();
         std::io::stdin().read_to_string(&mut content)?;
