@@ -1,36 +1,61 @@
 # A free reverse proxy and CLI tool for OpenAI GPT-3.5-turbo.
-It allows you to use the GPT-3.5 API without needing to sign up for an API key or pay for usage. 
 **[WIP]** 
+It allows you to use the GPT-3.5 API without needing to sign up for an API key or pay for usage. 
+
+## Features
+- [x] REPL mode, you can input questions and get answers interactively
+- [ ] Reverse proxy mode, you can use the GPT-3.5 API without needing to sign up for an API key or pay for usage
+- [x] CLI mode, with shell pipe, file input, code output, etc.
+- [x] Support https proxy
+
 
 ## Installation
 ```bash
-cargo install rgpt
+cargo install fgpt
 ```
 ## How to use CLI
 
 ```bash
 # To get help
-rgpt "Linux command to list files in a directory"
+fgpt "Linux command to list files in a directory"
 
-# Output plain code
-rgpt -c "Write python code to reverse a string"
+# Output plain code -c/--code
+fgpt -c "Write python code to reverse a string"
 
 # With pipe
-git diff | rgpt "Write a commit message for this diff"
+git diff | fgpt "Write a commit message for this diff"
 
 # With stdin
-rgpt -r "Convert CSV to JSON" < contacts.csv
+fgpt "Convert CSV to JSON" < contacts.csv
 
-# With file
-rgpt -f contacts.csv  "Convert CSV to JSON"
+# With file -f/--file
+fgpt -f contacts.csv  "Convert CSV to JSON"
 
 # REPL mode
-rgpt
->> How to list files in a directory [ALT+ENTER]
+fgpt
+>> How to list files in a directory
 ...
+```
+### proxy options:
+```bash
+# 1. pass the proxy address by -p/--proxy
+fgpt -p 'socks5://127.0.0.1:9080' "Linux command to list files in a directory"
+# 2. pass the proxy address by environment variable
+export HTTPS_PROXY='socks5://127.0.0.1:9080'
+fgpt "Linux command to list files in a directory"
+```
+### dump stats
+```bash
+fgpt --stats "Linux command to list files in a directory"
+```
+
+## Use by docker
+```bash
+docker run -it --rm shenjinti/fgpt "Linux command to list files in a directory"
 ```
 
 ## How to use Reverse Proxy
+**[WIP]**
 ```bash
-rgpt -s 127.0.0.1:3000
+fgpt -s 127.0.0.1:3000
 ```

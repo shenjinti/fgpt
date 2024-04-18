@@ -1,7 +1,9 @@
-use std::{collections::HashMap, fmt, pin::Pin, sync::atomic::AtomicI32, task::{Context, Poll}};
+use std::{collections::HashMap, fmt, pin::Pin, task::{Context, Poll}};
 use bytes::{Bytes, BytesMut};
-use futures::stream::{Stream};
+use chrono::{DateTime, Local};
+use futures::stream::Stream;
 use reqwest::{header::{ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, ORIGIN, PRAGMA, REFERER, USER_AGENT}, Client, Proxy};
+use rustyline::error::ReadlineError;
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 
 use crate::StateRef;
@@ -35,6 +37,17 @@ impl From<serde_json::Error> for Error {
     }
 }
 
+#[cfg(feature = "cli")]
+impl From<ReadlineError> for Error{
+    fn from(e: ReadlineError) -> Self {
+        match e {
+            ReadlineError::Eof => Error::Io("EOF".to_string()),
+            _ => Error::Io(e.to_string()),
+        }
+    }
+    
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -44,6 +57,7 @@ impl fmt::Display for Error {
         }
     }
 }
+
 #[derive(Debug)]
 pub struct Session {
     pub start_at: std::time::Instant,
@@ -55,6 +69,7 @@ struct ChatRequirementsResponse {
     pub token: String,
 }
 
+#[derive(Debug)]
 pub struct Message {
     pub role: String,
     pub content: String,
@@ -87,13 +102,17 @@ pub struct CompletionRequest {
     pub messages:Vec<Message>,
     pub conversation_mode:HashMap<String, String>,
     pub websocket_request_id: String,
-    pub parent_message_id:String,
+    pub conversation_id:Option<String>,
+    pub parent_message_id:Option<String>,
     pub timezone_offset_min:i32,
     pub history_and_training_disabled:bool,
 }
 
 impl CompletionRequest {
-    pub fn new(state: StateRef, messages:Vec<Message>) -> Self {
+    pub fn new(state: StateRef, messages:Vec<Message>, conversation_id:Option<String>, parent_message_id:Option<String>, ) -> Self {
+        let local: DateTime<Local> = Local::now();
+        let offset_minutes = local.offset().local_minus_utc() / 60;
+
         Self {
             action: "next".to_string(),
             messages,
@@ -103,17 +122,13 @@ impl CompletionRequest {
                 map.insert("kind".to_string(), "primary_assistant".to_string());
                 map},
             websocket_request_id: uuid::Uuid::new_v4().to_string(),
-            parent_message_id: uuid::Uuid::new_v4().to_string(),
-            timezone_offset_min: -180,
+            conversation_id,
+            parent_message_id,
+            timezone_offset_min: offset_minutes,
             history_and_training_disabled:false,
         }
     }
-
-    pub fn prompt_tokens(&self) -> u32 {
-        let tokenizer = gpt_tokenizer::Default::new();
-        self.messages.iter().map(|message| tokenizer.encode(&message.content).len() as u32).sum()
-    }
-
+    
     pub async fn stream(&self, state:StateRef) -> Result<CompletionStream, Error> {
         let start_at = std::time::Instant::now();
         let session = alloc_session(state.clone()).await?;
@@ -128,10 +143,6 @@ impl CompletionRequest {
             return Err(Error::Reqwest(resp_body));
         }
         Ok(CompletionStream { 
-            start_at,
-            prompt_tokens: self.prompt_tokens(),
-            completion_tokens: AtomicI32::new(0),
-            total_tokens: AtomicI32::new(0),
             response_stream: Box::pin(resp.bytes_stream()),
             buffer: BytesMut::new()
          })
@@ -143,6 +154,7 @@ pub(crate) enum CompletionEvent {
     Data(CompletionResponse),
     Done,
     Heartbeat,
+    #[allow(unused)]
     Text(String),
 }
 
@@ -162,18 +174,20 @@ impl From<&BytesMut> for CompletionEvent {
         }
     }
 }
-
+#[allow(unused)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct CompletionMessageAuthor {
     pub role:String,
     pub name:Option<String>,
     pub metadata:HashMap<String, serde_json::Value>,
 }
+#[allow(unused)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct CompletionMessageContent {
     pub content_type:String,
     pub parts:Vec<String>,
 }
+#[allow(unused)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct CompletionMessageMeta {
     pub citations:Option<Vec<String>>,
@@ -186,7 +200,7 @@ pub(crate) struct CompletionMessageMeta {
     pub model_switcher_deny:Option<Vec<String>>,
     pub is_visually_hidden_from_conversation:Option<bool>,
 }
-
+#[allow(unused)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct CompletionMessage {
     pub id:String,
@@ -201,6 +215,7 @@ pub(crate) struct CompletionMessage {
     pub recipient:String,
 
 }
+#[allow(unused)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct CompletionResponse {
     pub message:CompletionMessage,
@@ -209,20 +224,15 @@ pub(crate) struct CompletionResponse {
 }
 
 pub(crate) struct CompletionStream {
-    pub start_at: std::time::Instant,
-    pub prompt_tokens: u32,
-    pub completion_tokens: AtomicI32,
-    pub total_tokens: AtomicI32,
-
     response_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     buffer: BytesMut,
 }
+
 
 impl Stream for CompletionStream {
     type Item = reqwest::Result<CompletionEvent>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        
         loop {
             match self.response_stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(data))) => {
@@ -296,8 +306,7 @@ fn build_req(url:&str, device_id:&str, token:Option<&str>, state:StateRef) -> Re
 
 pub(crate) async fn alloc_session(state: StateRef) -> Result<Session, Error> {
     let start_at = std::time::Instant::now();
-    let device_id = state.create_device_id();
-    let resp = build_req(OPENAI_SENTINEL_URL, &device_id, None, state.clone())?.send().await;
+    let resp = build_req(OPENAI_SENTINEL_URL, &state.device_id, None, state.clone())?.send().await;
     
     log::debug!("alloc session: {} ms, proxy: {:?} -> {:?}", start_at.elapsed().as_millis(), state.proxy, resp.as_ref().map(|r| r.status()));
     
@@ -313,6 +322,6 @@ pub(crate) async fn alloc_session(state: StateRef) -> Result<Session, Error> {
     Ok(Session {
         start_at,
         token: data.token,
-        device_id,
+        device_id:state.device_id.clone(),
     })
 }

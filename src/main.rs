@@ -1,24 +1,33 @@
 use clap::Parser;
 use std::{io::Write, sync::Arc};
-
+#[cfg(feature = "cli")]
 mod cli;
+mod fgpt;
+#[cfg(feature = "proxy")]
 mod proxy;
-mod rgpt;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
+    pub device_id: String,
     pub code: bool,
     pub model: String,
     pub lang: String,
     pub proxy: Option<String>,
     pub qusetion: Option<String>,
+    pub input_file: Option<String>,
+    pub repl: bool,
+    pub dump_stats: bool,
 }
 
 impl AppState {
     pub fn new(args: &Args) -> Self {
         Self {
+            device_id: uuid::Uuid::new_v4().to_string(),
             code: args.code,
             qusetion: args.question.clone(),
+            input_file: args.file.clone(),
+            repl: args.repl,
+            dump_stats: args.stats,
             proxy: args.proxy.clone(),
             lang: args.lang.as_ref().unwrap_or(&"en-US".to_string()).clone(),
             model: args
@@ -27,9 +36,6 @@ impl AppState {
                 .unwrap_or(&"text-davinci-002-render-sha".to_string())
                 .clone(),
         }
-    }
-    pub fn create_device_id(&self) -> String {
-        uuid::Uuid::new_v4().to_string()
     }
 }
 type StateRef = Arc<AppState>;
@@ -73,6 +79,10 @@ pub(crate) struct Args {
     #[cfg(feature = "cli")]
     #[clap(long, help = "Interactive REPL mode")]
     repl: bool,
+
+    #[cfg(feature = "cli")]
+    #[clap(long, help = "Dump stats to stdout")]
+    stats: bool,
 
     #[cfg(feature = "proxy")]
     #[clap(long, short, help = "Serve the proxy at the given address")]
@@ -130,7 +140,7 @@ fn init_log(level: &String, is_test: bool, log_file_name: &Option<String>) {
 }
 
 #[tokio::main]
-pub async fn main() -> Result<(), crate::rgpt::Error> {
+pub async fn main() -> Result<(), crate::fgpt::Error> {
     let args = Args::parse();
     init_log(&args.log_level, false, &args.log_file);
 

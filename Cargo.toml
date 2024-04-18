@@ -1,8 +1,8 @@
 [package]
-name = "rgpt"
+name = "fgpt"
 version = "0.1.0"
 edition = "2021"
-description = "A free reverse proxy and CLI tool for OpenAI GPT-3.5-turbo."
+description = "A free reverse proxy and cli tool for OpenAI GPT-3.5-turbo."
 
 [features]
 default = ["cli", "proxy"]
@@ -24,3 +24,5 @@ futures = "0.3.30"
 bytes = "1.6.0"
 gpt_tokenizer = "0.1.0"
 regex = "1.10.4"
+rustyline = "14.0.0"
+atty = "0.2.14"
