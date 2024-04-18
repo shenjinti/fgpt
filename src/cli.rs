@@ -12,7 +12,7 @@ Type `/exit` to exit the program.
 Type `/reset` to reset the conversation.
     "#;
 
-    println!("Ctrl-C to cancel, Ctrl-D to exit. '\' for a new line. ✨");
+    println!("Ctrl-C to cancel, Ctrl-D to exit. \\ for a new line. ✨");
 
     let mut rl = DefaultEditor::new()?;
     let mut prompt_text = ">> ".to_string();
