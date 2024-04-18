@@ -8,6 +8,12 @@ It allows you to use the GPT-3.5 API without needing to sign up for an API key o
 - [x] CLI mode, with shell pipe, file input, code output, etc.
 - [x] Support https proxy
 
+## Download precompiled binary
+
+- [Linux](https://github.com/shenjinti/fgpt/releases/download/v0.1.1/fgpt-linux-v0.1.1.tar.gz) executable binary
+- [Mac M1/M2](https://github.com/shenjinti/fgpt/releases/download/v0.1.1/fgpt-mac_aarch64.tar.gz) executable binary
+- Windows (Coming soon)
+- Or via [Docker](https://hub.docker.com/r/shenjinti/fgpt)
 
 ## Installation
 ```bash
