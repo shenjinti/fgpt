@@ -3,6 +3,12 @@ name = "fgpt"
 version = "0.1.0"
 edition = "2021"
 description = "A free reverse proxy and cli tool for OpenAI GPT-3.5-turbo."
+authors = ["jinti <shenjindi@fourz.cn>"]
+homepage = "https://github.com/shenjinti/fgpt"
+repository = "https://github.com/shenjinti/fgpt"
+keywords = ["cli", "gpt", "chat-gpt", "gpt-3.5"]
+license = "BSD-3-Clause"
+readme = "README.md"
 
 [features]
 default = ["cli", "proxy"]
