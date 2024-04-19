@@ -8,19 +8,31 @@ mod proxy;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
+    pub proxy: Option<String>,
     pub device_id: String,
     pub code: bool,
     pub model: String,
     pub lang: String,
-    pub proxy: Option<String>,
     pub qusetion: Option<String>,
     pub input_file: Option<String>,
     pub repl: bool,
     pub dump_stats: bool,
+
+    #[cfg(feature = "proxy")]
+    pub prefix: String,
+    #[cfg(feature = "proxy")]
+    pub serve_addr: String,
 }
 
 impl AppState {
     pub fn new(args: &Args) -> Self {
+        let env_lang = std::env::var("LANG")
+            .unwrap_or_else(|_| "en-US".to_string())
+            .split('.')
+            .next()
+            .unwrap_or("en-US")
+            .to_string();
+
         Self {
             device_id: uuid::Uuid::new_v4().to_string(),
             code: args.code,
@@ -29,11 +41,20 @@ impl AppState {
             repl: args.repl,
             dump_stats: args.stats,
             proxy: args.proxy.clone(),
-            lang: args.lang.as_ref().unwrap_or(&"en-US".to_string()).clone(),
+            lang: args.lang.as_ref().unwrap_or(&env_lang).clone(),
             model: args
                 .model
                 .as_ref()
                 .unwrap_or(&"text-davinci-002-render-sha".to_string())
+                .clone(),
+
+            #[cfg(feature = "proxy")]
+            prefix: args.prefix.as_ref().unwrap_or(&"/v1".to_string()).clone(),
+            #[cfg(feature = "proxy")]
+            serve_addr: args
+                .serve
+                .as_ref()
+                .unwrap_or(&"127.0.0.1:4090".to_string())
                 .clone(),
         }
     }
@@ -45,6 +66,10 @@ type StateRef = Arc<AppState>;
 pub(crate) struct Args {
     #[clap(help = "Your help message")]
     question: Option<String>,
+
+    #[clap(long)]
+    debug: bool,
+
     #[clap(
         long,
         default_value = "text-davinci-002-render-sha",
@@ -63,7 +88,7 @@ pub(crate) struct Args {
 
     #[clap(
         long,
-        default_value = "info",
+        default_value = "",
         help = "Log level: trace, debug, info, warn, error"
     )]
     log_level: String,
@@ -135,14 +160,18 @@ fn init_log(level: &String, is_test: bool, log_file_name: &Option<String>) {
         })
         .target(env_logger::Target::Pipe(target))
         .format_timestamp(None)
-        .filter_level(level.parse().unwrap())
+        .filter_level(level.parse().unwrap_or(log::LevelFilter::Info))
         .try_init();
 }
 
 #[tokio::main]
 pub async fn main() -> Result<(), crate::fgpt::Error> {
     let args = Args::parse();
-    init_log(&args.log_level, false, &args.log_file);
+    if args.debug && args.log_level == "" {
+        init_log(&"debug".to_string(), false, &args.log_file);
+    } else {
+        init_log(&args.log_level, false, &args.log_file);
+    }
 
     let state = Arc::new(AppState::new(&args));
 

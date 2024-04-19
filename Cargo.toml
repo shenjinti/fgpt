@@ -1,6 +1,6 @@
 [package]
 name = "fgpt"
-version = "0.1.1"
+version = "0.1.3"
 edition = "2021"
 description = "A free reverse proxy and cli tool for OpenAI GPT-3.5-turbo."
 authors = ["jinti <shenjindi@fourz.cn>"]
@@ -29,9 +29,12 @@ reqwest = { version = "0.12.3", default-features = false, features = [
     "rustls-tls",
     "json",
     "stream",
+    "socks",
 ] }
 futures = "0.3.30"
 bytes = "1.6.0"
 gpt_tokenizer = "0.1.0"
 regex = "1.10.4"
-rustyline = "14.0.0"
+rustyline = { version = "14.0.0", features = ["derive"] }
+rand = "0.8.5"
+tokio-stream = "0.1.15"

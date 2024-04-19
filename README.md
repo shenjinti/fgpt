@@ -75,5 +75,5 @@ docker run -it --rm shenjinti/fgpt "Linux command to list files in a directory"
 ## How to use Reverse Proxy
 **[WIP]**
 ```bash
-fgpt -s 127.0.0.1:3000
+fgpt -s 127.0.0.1:4090
 ```

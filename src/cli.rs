@@ -1,23 +1,49 @@
-use crate::fgpt::{CompletionRequest, Message};
-use futures::StreamExt;
-use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use crate::fgpt::Message;
+use rustyline::highlight::Highlighter;
+use rustyline::{error::ReadlineError, Editor};
+use rustyline::{Completer, Helper, Highlighter, Hinter, Validator};
+use std::borrow::Cow;
 use std::io::{IsTerminal, Read, Write};
 use tokio::select;
 
-const HELP_TEXT: &str = r"🎉 free GPT-3.5 cli tools | https://github.com/shenjinti/fgpt
+#[derive(Default)]
+struct PromptHighlighter {}
 
-Type `/help` for more information.
-Type '/exit' or <Ctrl-D> to exit the program.
-Type '/reset' to reset the conversation.
+impl Highlighter for PromptHighlighter {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        return Cow::Owned(format!("\x1b[33m{}\x1b[0m", line));
+    }
 
-Ctrl-C to cancel, Ctrl-D to exit. \ for a new line. ✨
-";
+    fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
+        return true;
+    }
+}
+
+#[derive(Completer, Helper, Highlighter, Hinter, Validator)]
+struct PromptHelper {
+    #[rustyline(Highlighter)]
+    highlighter: PromptHighlighter,
+}
 
 pub async fn run_repl(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
-    println!("{}", HELP_TEXT);
+    println!("free GPT-3.5 cli tools | 🪐 https://github.com/shenjinti/fgpt");
+    println!("💖 To star the repository if you like \x1b[1;32mfgpt\x1b[0m!");
 
-    let mut rl = DefaultEditor::new()?;
+    let help_texts = vec![
+        "",
+        "Type `\x1b[1;32m/help\x1b[0m` for more information.",
+        "Type `\x1b[1;32m/exit\x1b[0m` or <\x1b[1;35mCtrl-D\x1b[0m> to exit the program.",
+        "Type `\x1b[1;32m/reset\x1b[0m` to reset the conversation.",
+        "",
+        "Ctrl-C to cancel, Ctrl-D to exit. \x1b[1;32m\\\x1b[0m for a new line. ✨",
+    ];
+    help_texts.iter().for_each(|text| println!("{}", text));
+    let h = PromptHelper {
+        highlighter: PromptHighlighter {},
+    };
+
+    let mut rl = Editor::new()?;
+    rl.set_helper(Some(h));
     let mut prompt_text = ">> ".to_string();
     let mut question = String::new();
 
@@ -32,7 +58,7 @@ pub async fn run_repl(state: crate::StateRef) -> Result<(), crate::fgpt::Error> 
                 match line {
                     "/exit" => break,
                     "/help" => {
-                        println!("{}", HELP_TEXT);
+                        help_texts.iter().for_each(|text| println!("{}", text));
                         continue;
                     }
                     "/reset" => {
@@ -62,19 +88,24 @@ pub async fn run_repl(state: crate::StateRef) -> Result<(), crate::fgpt::Error> 
                 messages.push(Message {
                     role: "user".to_string(),
                     content: line.to_string(),
-                    content_type: "text".to_string(),
+                    content_type: Some("text".to_string()),
                 });
 
                 select! {
-                    r = execute_plain(
+                    r = crate::fgpt::execute_plain(
                         state.clone(),
                         messages,
                         conversation_id.clone(),
                         last_message_id.clone(),
+                         |delta| async move {
+                            print!("{}", delta);
+                            std::io::stdout().flush().ok();
+                        },
                     ) => {
                         let r = r?;
                         conversation_id = Some(r.conversation_id);
                         last_message_id = Some(r.last_message_id);
+                        println!();
                     }
                     _ = tokio::signal::ctrl_c() => {
                         log::info!("Ctrl-C pressed. Exiting.");
@@ -104,7 +135,7 @@ pub async fn run(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
         messages.push(Message {
             role: "system".to_string(),
             content: include_str!("./role.code.prompt").to_string(),
-            content_type: "text".to_string(),
+            content_type: Some("text".to_string()),
         });
     }
 
@@ -112,7 +143,7 @@ pub async fn run(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
         messages.push(Message {
             role: "user".to_string(),
             content: q.clone(),
-            content_type: "text".to_string(),
+            content_type: Some("text".to_string()),
         });
     }
 
@@ -121,7 +152,7 @@ pub async fn run(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
         messages.push(Message {
             role: "user".to_string(),
             content,
-            content_type: "text".to_string(),
+            content_type: Some("text".to_string()),
         });
     }
 
@@ -132,7 +163,7 @@ pub async fn run(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
         messages.push(Message {
             role: "user".to_string(),
             content,
-            content_type: "text".to_string(),
+            content_type: Some("text".to_string()),
         });
     }
 
@@ -145,83 +176,37 @@ pub async fn run(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
         .sum();
 
     let start_at = std::time::Instant::now();
-    let result = execute_plain(
+    let r = crate::fgpt::execute_plain(
         state.clone(),
         messages,
         None,
         Some(uuid::Uuid::new_v4().to_string()),
+        |delta| async move {
+            print!("{}", delta);
+            std::io::stdout().flush().ok();
+        },
     )
     .await?;
 
-    if state.dump_stats {
-        let elapsed = start_at.elapsed().as_secs_f64();
-        let completion_tokens = tokenizer.encode(&result.textbuf).len();
-        let total_tokens = completion_tokens + prompt_tokens;
-        let throughput = completion_tokens as f64 / elapsed as f64;
+    println!();
 
-        println!(
-            "Total tokens: \x1b[32m{}\x1b[0m, completion tokens: \x1b[32m{}\x1b[0m, prompt tokens: \x1b[32m{}\x1b[0m, elapsed: \x1b[33m{:.1}\x1b[0m secs, throughput: \x1b[33m{:.2}\x1b[0m tps",
-            total_tokens,
-            completion_tokens,
-            prompt_tokens,
-            elapsed,
-            throughput
-        );
+    let elapsed = start_at.elapsed().as_secs_f64();
+    let completion_tokens = tokenizer.encode(&r.textbuf).len();
+    let total_tokens = completion_tokens + prompt_tokens;
+    let throughput = completion_tokens as f64 / elapsed as f64;
+
+    let stats_text = format!(
+        "Total tokens: \x1b[32m{}\x1b[0m, completion tokens: \x1b[32m{}\x1b[0m, prompt tokens: \x1b[32m{}\x1b[0m, elapsed: \x1b[33m{:.1}\x1b[0m secs, throughput: \x1b[33m{:.2}\x1b[0m tps",
+        total_tokens,
+        completion_tokens,
+        prompt_tokens,
+        elapsed,
+        throughput
+    );
+    if state.dump_stats {
+        println!("{}", stats_text);
+    } else {
+        log::debug!("{}", stats_text);
     }
     Ok(())
-}
-
-struct CompletionResult {
-    textbuf: String,
-    conversation_id: String,
-    last_message_id: String,
-}
-
-async fn execute_plain(
-    state: crate::StateRef,
-    messages: Vec<Message>,
-    conversion_id: Option<String>,
-    parent_message_id: Option<String>,
-) -> Result<CompletionResult, crate::fgpt::Error> {
-    let req = CompletionRequest::new(state.clone(), messages, conversion_id, parent_message_id);
-    let mut stream = req.stream(state.clone()).await?;
-
-    let mut textbuf = String::new();
-    let mut conversation_id = String::new();
-    let mut last_message_id = String::new();
-
-    while let Some(message) = stream.next().await {
-        match message {
-            Ok(crate::fgpt::CompletionEvent::Data(message)) => {
-                if message.message.author.role != "assistant" {
-                    continue;
-                }
-
-                let text = message.message.content.parts.join("\n");
-                if textbuf.len() > text.len() {
-                    continue;
-                }
-                let delta_chars = &text[textbuf.len()..];
-                textbuf = text.clone();
-                print!("{}", delta_chars);
-                let _ = std::io::stdout().flush();
-                conversation_id = message.conversation_id.clone();
-                last_message_id = message.message.id.clone();
-            }
-            Ok(crate::fgpt::CompletionEvent::Done) => {
-                println!();
-                break;
-            }
-            Ok(_) => {}
-            Err(e) => {
-                log::error!("{:?}", e);
-                break;
-            }
-        }
-    }
-    Ok(CompletionResult {
-        textbuf,
-        conversation_id,
-        last_message_id,
-    })
 }

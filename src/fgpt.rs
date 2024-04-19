@@ -1,11 +1,11 @@
 use std::{collections::HashMap, fmt, pin::Pin, task::{Context, Poll}};
 use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Local};
-use futures::stream::Stream;
+use futures::{stream::Stream, Future};
 use reqwest::{header::{ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, ORIGIN, PRAGMA, REFERER, USER_AGENT}, Client, Proxy};
 use rustyline::error::ReadlineError;
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
-
+use futures::StreamExt;
 use crate::StateRef;
 
 const OPENAI_ENDPOINT: &str = "https://chat.openai.com";
@@ -44,8 +44,7 @@ impl From<ReadlineError> for Error{
             ReadlineError::Eof => Error::Io("EOF".to_string()),
             _ => Error::Io(e.to_string()),
         }
-    }
-    
+    }    
 }
 
 impl fmt::Display for Error {
@@ -69,11 +68,11 @@ struct ChatRequirementsResponse {
     pub token: String,
 }
 
-#[derive(Debug)]
+#[derive(Deserialize, Debug)]
 pub struct Message {
     pub role: String,
     pub content: String,
-    pub content_type: String,
+    pub content_type: Option<String>,
 }
 
 impl Serialize for Message {
@@ -102,7 +101,9 @@ pub struct CompletionRequest {
     pub messages:Vec<Message>,
     pub conversation_mode:HashMap<String, String>,
     pub websocket_request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id:Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_message_id:Option<String>,
     pub timezone_offset_min:i32,
     pub history_and_training_disabled:bool,
@@ -136,7 +137,8 @@ impl CompletionRequest {
         let body = serde_json::to_string(&self)?;
         let resp = builder.body(body.clone()).send().await?;
 
-        log::debug!("open stream: {} ms, proxy: {:?} -> {:?}", start_at.elapsed().as_millis(), state.proxy, resp.status());
+        log::debug!("open stream: {} ms, proxy: {:?} body:{:?} -> {:?}", start_at.elapsed().as_millis(), state.proxy, body, resp.status());
+        self.messages.iter().for_each(|m| log::debug!("{:?}", m));
 
         if !resp.status().is_success() {
             let resp_body = resp.text().await?;
@@ -187,6 +189,11 @@ pub(crate) struct CompletionMessageContent {
     pub content_type:String,
     pub parts:Vec<String>,
 }
+
+#[derive(Debug, Deserialize)]
+pub (crate) struct CompletionMessageFinishDetails {
+    pub r#type:Option<String>,
+}
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct CompletionMessageMeta {
@@ -199,6 +206,7 @@ pub(crate) struct CompletionMessageMeta {
     pub parent_id:Option<String>,
     pub model_switcher_deny:Option<Vec<String>>,
     pub is_visually_hidden_from_conversation:Option<bool>,
+    pub finish_details:Option<CompletionMessageFinishDetails>,
 }
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
@@ -221,6 +229,27 @@ pub(crate) struct CompletionResponse {
     pub message:CompletionMessage,
     pub conversation_id:String,
     pub error:Option<String>,
+}
+impl CompletionResponse {
+    pub fn get_finish_reason(&self) -> Option<String> {
+        self.message.metadata.finish_details.as_ref().map(|finish_details| {
+            if let Some(finish_type) = finish_details.r#type.as_ref() {
+                match finish_type.as_str() {
+                    "max_tokens" => "length".to_string(),
+                    _ => "stop".to_string(),
+                }
+            } else {
+                "stop".to_string()
+            }
+        })
+    }
+}
+
+pub(crate) struct CompletionResult {
+    pub(crate) textbuf: String,
+    pub(crate) conversation_id: String,
+    pub(crate) last_message_id: String,
+    pub(crate) finish_reason:Option<String>,
 }
 
 pub(crate) struct CompletionStream {
@@ -264,12 +293,18 @@ impl Stream for CompletionStream {
 fn build_req(url:&str, device_id:&str, token:Option<&str>, state:StateRef) -> Result<reqwest::RequestBuilder, reqwest::Error> {
     let client = match state.proxy.as_ref() {
         Some(proxy) => {
-            let proxy = Proxy::all(proxy)?;
-            Client::builder().proxy(proxy).build()?
+            match Proxy::all(proxy) {
+                Ok(proxy) => Client::builder().proxy(proxy).build().ok(),
+                Err(e) => {
+                    log::warn!("setup proxy error: {:?}, ignore proxy: {}", e, proxy);
+                    None
+                }
+            }
         }
-        None => Client::new(),
-    };
-
+        None => None,
+    }.unwrap_or(Client::new());
+    
+    let short_lang = state.lang.split('-').next().unwrap_or("en");
     let builder = client
         .post(url)    
         .header("oai-language", state.lang.clone())
@@ -277,7 +312,7 @@ fn build_req(url:&str, device_id:&str, token:Option<&str>, state:StateRef) -> Re
         .header(ACCEPT, "*/*")
         .header(
             ACCEPT_LANGUAGE,
-            format!("{},en;q=0.9", state.lang.clone()),
+            format!("{},{};q=0.9", state.lang.clone(), short_lang),
         )
         .header(CACHE_CONTROL, "no-cache")
         .header(PRAGMA, "no-cache")
@@ -313,7 +348,9 @@ pub(crate) async fn alloc_session(state: StateRef) -> Result<Session, Error> {
     let resp = match resp {
         Ok(resp) => resp,
         Err(e) => {
-            log::error!("alloc session fail: {} , proxy: {:?} -> {:?}", OPENAI_SENTINEL_URL, state.proxy, e);
+            println!("Alloc session fail, proxy: {:?}",  state.proxy);
+            println!("If this error persists, your country may not be supported yet.");
+            println!("If your country was the issue, please consider using a U.S. VPN.");
             return Err(e.into());
         }
     };
@@ -323,5 +360,64 @@ pub(crate) async fn alloc_session(state: StateRef) -> Result<Session, Error> {
         start_at,
         token: data.token,
         device_id:state.device_id.clone(),
+    })
+}
+
+
+pub(crate) async fn execute_plain<C, Fut>(
+    state: crate::StateRef,
+    messages: Vec<Message>,
+    conversion_id: Option<String>,
+    parent_message_id: Option<String>,
+    hanlde_delta: C,
+) -> Result<CompletionResult, crate::fgpt::Error>
+where
+C: FnOnce(String) -> Fut + std::marker::Copy + 'static,
+Fut: Future<Output = ()> + Send + 'static,
+{
+    let req = CompletionRequest::new(state.clone(), messages, conversion_id, parent_message_id);
+    let mut stream = req.stream(state.clone()).await?;
+
+    let mut textbuf = String::new();
+    let mut conversation_id = String::new();
+    let mut last_message_id = String::new();
+    let mut finish_reason = None;
+
+    while let Some(message) = stream.next().await {
+        match message {
+            Ok(crate::fgpt::CompletionEvent::Data(message)) => {
+                if message.message.author.role != "assistant" {
+                    continue;
+                }
+
+                let text = message.message.content.parts.join("\n");
+                if textbuf.len() > text.len() {
+                    continue;
+                }
+
+                finish_reason = message.get_finish_reason();
+                conversation_id = message.conversation_id.clone();
+                last_message_id = message.message.id.clone();
+
+                let delta_chars = &text[textbuf.len()..];
+                textbuf = text.clone();
+
+                hanlde_delta(delta_chars.to_string()).await;
+            }
+            Ok(crate::fgpt::CompletionEvent::Done) => {
+                break;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                log::error!("{:?}", e);
+                break;
+            }
+        }
+    }
+    Ok(CompletionResult {
+        textbuf,
+        conversation_id,
+        last_message_id,
+        finish_reason,
     })
 }
