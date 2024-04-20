@@ -6,16 +6,15 @@ It allows you to use the GPT-3.5 API without needing to sign up for an API key o
 ## Features
 
 - [x] REPL mode, you can input questions and get answers interactively
-- [ ] Reverse proxy mode, you can use the GPT-3.5 API without needing to sign up for an API key or pay for usage
+- [x] Reverse proxy mode, you can use the GPT-3.5 API without needing to sign up for an API key or pay for usage
 - [x] CLI mode, with shell pipe, file input, code output, etc.
 - [x] Support https proxy
 
-free gpt-3.5 turbo with a cli tool
 
 ## Download precompiled binary
 
-- [Linux](https://github.com/shenjinti/fgpt/releases/download/v0.1.1/fgpt-linux-v0.1.1.tar.gz) executable binary
-- [Mac M1/M2](https://github.com/shenjinti/fgpt/releases/download/v0.1.1/fgpt-mac_aarch64.tar.gz) executable binary
+- [Linux](https://github.com/shenjinti/fgpt/releases/download/v0.1.5/fgpt-linux-v0.1.5.tar.gz) executable binary
+- [Mac M1/M2](https://github.com/shenjinti/fgpt/releases/download/v0.1.5/fgpt-mac_aarch64-v0.1.5.tar.gz) executable binary
 - Windows (Coming soon)
 - Or via [Docker](https://hub.docker.com/r/shenjinti/fgpt)
 - Or build from source (see below, cargo is required)
@@ -81,6 +80,7 @@ docker run -it --rm shenjinti/fgpt "Linux command to list files in a directory"
 
 ## How to use Reverse Proxy
 
+**[WIP]**
 ChatGPT API Free Reverse Proxy, offering free self-hosted API access to ChatGPT.
 
 ### 1. Start the server

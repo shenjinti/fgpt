@@ -1,6 +1,6 @@
 [package]
 name = "fgpt"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "A free reverse proxy and cli tool for OpenAI GPT-3.5-turbo."
 authors = ["jinti <shenjindi@fourz.cn>"]
@@ -39,3 +39,6 @@ rustyline = { version = "14.0.0", features = ["derive"] }
 rand = "0.8.5"
 tokio-stream = "0.1.15"
 rustls = "0.23.5"
+base64 = "0.22.0"
+hex = "0.4.3"
+sha3 = "0.10.8"

@@ -3,8 +3,8 @@ use rustyline::highlight::Highlighter;
 use rustyline::{error::ReadlineError, Editor};
 use rustyline::{Completer, Helper, Highlighter, Hinter, Validator};
 use std::borrow::Cow;
+use std::io::Write;
 use std::io::{IsTerminal, Read};
-use tokio::io::AsyncWriteExt;
 use tokio::select;
 
 #[derive(Default)]
@@ -100,7 +100,7 @@ pub async fn run_repl(state: fgpt::StateRef) -> Result<(), fgpt::Error> {
                         last_message_id.clone(),
                          |delta| async move {
                             print!("{}", delta);
-                            tokio::io::stdout().flush().await.ok();
+                            std::io::stdout().flush().ok();
                         },
                     ) => {
                         let r = r?;
@@ -184,7 +184,7 @@ pub async fn run(state: fgpt::StateRef) -> Result<(), fgpt::Error> {
         Some(uuid::Uuid::new_v4().to_string()),
         |delta| async move {
             print!("{}", delta);
-            tokio::io::stdout().flush().await.ok();
+            std::io::stdout().flush().ok();
         },
     )
     .await?;
