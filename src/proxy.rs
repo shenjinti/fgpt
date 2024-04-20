@@ -1,4 +1,4 @@
-use crate::{fgpt::CompletionRequest, StateRef};
+use crate::fgpt::{CompletionRequest, StateRef};
 use axum::{
     extract::State,
     response::{sse::Event, IntoResponse, Response, Sse},
@@ -16,7 +16,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 #[derive(Deserialize, Debug, Serialize, Default)]
 struct OpenAPIClientRequest {
     messages: Vec<crate::fgpt::Message>,
-    stream: bool,
+    stream: Option<bool>,
 }
 
 async fn proxy_completions(
@@ -41,15 +41,15 @@ async fn proxy_completions(
         .sum();
 
     log::debug!(
-        "exec request_id:{} stream:{} messages:{:?}",
+        "exec request_id:{} stream:{:?} messages:{:?}",
         request_id,
         params.stream,
         params.messages
     );
 
     let start_at = std::time::Instant::now();
-
-    if params.stream {
+    let stream_mode = params.stream.unwrap_or(false);
+    if !stream_mode {
         let r = match crate::fgpt::execute_plain(
             state.clone(),
             params.messages,
@@ -139,43 +139,75 @@ async fn proxy_completions(
             let mut textbuf = String::new();
             let mut finish_reason = None;
 
-            while let Some(message) = stream.next().await {
-                match message {
-                    Ok(crate::fgpt::CompletionEvent::Data(message)) => {
-                        if message.message.author.role != "assistant" {
-                            continue;
-                        }
-
-                        let text = message.message.content.parts.join("\n");
-                        if textbuf.len() > text.len() {
-                            continue;
-                        }
-                        finish_reason = message.get_finish_reason();
-                        let delta_chars = &text[textbuf.len()..];
-                        let body = json!(
-                            {
-                                "id": request_id,
-                                "created": created_at,
-                                "model": "gpt-3.5-turbo",
-                                "object": "chat.completion.chunk",
-                                "choices": [
-                                    {
-                                        "index": 0,
-                                        "finish_reason": finish_reason,
-                                        "delta": {
-                                            "content": delta_chars,
-                                            "role": "assistant"
-                                        }
-                                    }
-                                ],
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(crate::fgpt::CompletionEvent::Data(event)) => match event.message.as_ref() {
+                        Some(message) => {
+                            if message.author.role != "assistant" {
+                                continue;
                             }
-                        );
-                        let event = Event::default().data(body.to_string());
-                        if tx.send(Ok(event)).is_err() {
-                            break;
+                            let text = message.content.parts.join("\n");
+                            if textbuf.len() > text.len() {
+                                continue;
+                            }
+                            finish_reason = event.get_finish_reason();
+                            let delta_chars = &text[textbuf.len()..];
+                            let body = json!(
+                                {
+                                    "id": request_id,
+                                    "created": created_at,
+                                    "model": "gpt-3.5-turbo",
+                                    "object": "chat.completion.chunk",
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "finish_reason": finish_reason,
+                                            "delta": {
+                                                "content": delta_chars,
+                                                "role": "assistant"
+                                            }
+                                        }
+                                    ],
+                                }
+                            );
+                            let event = Event::default().data(body.to_string());
+                            if tx.send(Ok(event)).is_err() {
+                                break;
+                            }
+                            textbuf = text.clone();
                         }
-                        textbuf = text.clone();
-                    }
+                        None => match event.error.as_ref() {
+                            Some(error) => {
+                                let body = json!(
+                                    {
+                                        "id": request_id,
+                                        "created": created_at,
+                                        "model": "gpt-3.5-turbo",
+                                        "object": "chat.completion.chunk",
+                                        "choices": [
+                                            {
+                                                "index": 0,
+                                                "finish_reason": "error",
+                                                "delta": {
+                                                    "content": error,
+                                                }
+                                            }
+                                        ],
+                                    }
+                                );
+                                let event = Event::default().data(body.to_string());
+                                tx.send(Ok(event)).ok();
+
+                                log::error!(
+                                    "Failed to async execute_plain: {} request_id:{} ",
+                                    error,
+                                    request_id
+                                );
+                                break;
+                            }
+                            _ => {}
+                        },
+                    },
                     Ok(crate::fgpt::CompletionEvent::Done) => {
                         let body = json!(
                             {
@@ -196,6 +228,17 @@ async fn proxy_completions(
                         );
                         let event = Event::default().data(body.to_string());
                         tx.send(Ok(event)).ok();
+
+                        let completion_tokens = tokenizer.encode(&textbuf).len();
+                        let total_tokens = completion_tokens + prompt_tokens;
+
+                        log::info!(
+                            "sync exec request_id:{} elapsed:{}s throughput:{} tokens:{}",
+                            request_id,
+                            start_at.elapsed().as_secs_f64(),
+                            completion_tokens as f64 / start_at.elapsed().as_secs_f64(),
+                            total_tokens
+                        );
                         break;
                     }
                     Ok(_) => {}
@@ -211,7 +254,7 @@ async fn proxy_completions(
     }
 }
 
-pub async fn serve(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
+pub async fn serve(state: StateRef) -> Result<(), crate::fgpt::Error> {
     let app = Router::new()
         .nest(
             &state.prefix,

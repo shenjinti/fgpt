@@ -1,14 +1,16 @@
-# A free reverse proxy and CLI tool for OpenAI GPT-3.5-turbo.
-**[WIP]** 
-It allows you to use the GPT-3.5 API without needing to sign up for an API key or pay for usage. 
+# A free reverse proxy and CLI tool for OpenAI GPT-3.5-turbo
+
+**[WIP]**
+It allows you to use the GPT-3.5 API without needing to sign up for an API key or pay for usage.
 
 ## Features
+
 - [x] REPL mode, you can input questions and get answers interactively
 - [ ] Reverse proxy mode, you can use the GPT-3.5 API without needing to sign up for an API key or pay for usage
 - [x] CLI mode, with shell pipe, file input, code output, etc.
 - [x] Support https proxy
 
-free gpt-3.5 turbo with a cli tool 
+free gpt-3.5 turbo with a cli tool
 
 ## Download precompiled binary
 
@@ -17,6 +19,7 @@ free gpt-3.5 turbo with a cli tool
 - Windows (Coming soon)
 - Or via [Docker](https://hub.docker.com/r/shenjinti/fgpt)
 - Or build from source (see below, cargo is required)
+
     ```bash
     cargo install fgpt
     ```
@@ -46,7 +49,9 @@ fgpt
 >> Write a javascript code to reverse a string
 ...
 ```
-### With http proxy:
+
+### With http proxy
+
 If you are unable to connect , you can try using a proxy. HTTP and SOCKS5 proxies are supported. For example:
 
 ```bash
@@ -62,18 +67,43 @@ alias fgpt='fgpt -p "socks5://127.0.0.1:9080"'
 fgpt "Linux command to list files in a directory"
 ```
 
-### Dump stats 
+### Dump stats
+
 ```bash
 fgpt --stats "Linux command to list files in a directory"
 ```
 
 ## Use by docker
+
 ```bash
 docker run -it --rm shenjinti/fgpt "Linux command to list files in a directory"
 ```
 
 ## How to use Reverse Proxy
-**[WIP]**
+
+ChatGPT API Free Reverse Proxy, offering free self-hosted API access to ChatGPT.
+
+### 1. Start the server
+
 ```bash
 fgpt -s 127.0.0.1:4090
+```
+
+Your local server will now be running and accessible at: `http://127.0.0.1:4090/v1/chat/completions`
+
+### 2. Example Usage with OpenAI Libraries
+
+```python
+import openai
+openai.api_key = 'nothing'
+openai.base_url = "http://127.0.0.1:4090/v1/"
+
+completion = openai.chat.completions.create(
+    model="gpt-3.5-turbo",
+    messages=[
+        {"role": "user", "content": "Write a javascript simple code"},
+    ],
+)
+
+print(completion.choices[0].message.content)
 ```

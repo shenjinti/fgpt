@@ -1,9 +1,10 @@
-use crate::fgpt::Message;
+use crate::fgpt::{self, Message};
 use rustyline::highlight::Highlighter;
 use rustyline::{error::ReadlineError, Editor};
 use rustyline::{Completer, Helper, Highlighter, Hinter, Validator};
 use std::borrow::Cow;
-use std::io::{IsTerminal, Read, Write};
+use std::io::{IsTerminal, Read};
+use tokio::io::AsyncWriteExt;
 use tokio::select;
 
 #[derive(Default)]
@@ -25,7 +26,7 @@ struct PromptHelper {
     highlighter: PromptHighlighter,
 }
 
-pub async fn run_repl(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
+pub async fn run_repl(state: fgpt::StateRef) -> Result<(), fgpt::Error> {
     println!("free GPT-3.5 cli tools | 🪐 https://github.com/shenjinti/fgpt");
     println!("💖 To star the repository if you like \x1b[1;32mfgpt\x1b[0m!");
 
@@ -99,7 +100,7 @@ pub async fn run_repl(state: crate::StateRef) -> Result<(), crate::fgpt::Error> 
                         last_message_id.clone(),
                          |delta| async move {
                             print!("{}", delta);
-                            std::io::stdout().flush().ok();
+                            tokio::io::stdout().flush().await.ok();
                         },
                     ) => {
                         let r = r?;
@@ -125,7 +126,7 @@ pub async fn run_repl(state: crate::StateRef) -> Result<(), crate::fgpt::Error> 
     Ok(())
 }
 
-pub async fn run(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
+pub async fn run(state: fgpt::StateRef) -> Result<(), fgpt::Error> {
     if state.repl || (state.qusetion.is_none() && state.input_file.is_none()) {
         return run_repl(state).await;
     }
@@ -183,7 +184,7 @@ pub async fn run(state: crate::StateRef) -> Result<(), crate::fgpt::Error> {
         Some(uuid::Uuid::new_v4().to_string()),
         |delta| async move {
             print!("{}", delta);
-            std::io::stdout().flush().ok();
+            tokio::io::stdout().flush().await.ok();
         },
     )
     .await?;

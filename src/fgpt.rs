@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt, pin::Pin, task::{Context, Poll}};
+use std::{collections::HashMap, fmt, pin::Pin, sync::Arc, task::{Context, Poll}};
 use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Local};
 use futures::{stream::Stream, Future};
@@ -6,11 +6,31 @@ use reqwest::{header::{ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, ORI
 use rustyline::error::ReadlineError;
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use futures::StreamExt;
-use crate::StateRef;
 
 const OPENAI_ENDPOINT: &str = "https://chat.openai.com";
 const OPENAI_API_URL: &str = "https://chat.openai.com/backend-anon/conversation";
 const OPENAI_SENTINEL_URL: &str = "https://chat.openai.com/backend-anon/sentinel/chat-requirements";
+
+
+#[derive(Clone)]
+pub struct AppState {
+    pub proxy: Option<String>,
+    pub device_id: String,
+    pub code: bool,
+    pub model: String,
+    pub lang: String,
+    pub qusetion: Option<String>,
+    pub input_file: Option<String>,
+    pub repl: bool,
+    pub dump_stats: bool,
+
+    #[cfg(feature = "proxy")]
+    pub prefix: String,
+    #[cfg(feature = "proxy")]
+    pub serve_addr: String,
+}
+
+pub type StateRef = Arc<AppState>;
 
 #[derive(Debug)]
 pub enum Error {
@@ -72,6 +92,7 @@ struct ChatRequirementsResponse {
 pub struct Message {
     pub role: String,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
 }
 
@@ -87,7 +108,7 @@ impl Serialize for Message {
             })
         )?;
         s.serialize_field("content", &serde_json::json!({
-            "content_type": &self.content_type,
+            "content_type": &self.content_type.as_ref().unwrap_or(&"text".to_string()),
             "parts": &serde_json::json!(vec![&self.content]),
         }))?;
         s.end()
@@ -152,7 +173,7 @@ impl CompletionRequest {
 }
 
 #[derive(Debug)]
-pub(crate) enum CompletionEvent {
+pub enum CompletionEvent {
     Data(CompletionResponse),
     Done,
     Heartbeat,
@@ -178,14 +199,14 @@ impl From<&BytesMut> for CompletionEvent {
 }
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
-pub(crate) struct CompletionMessageAuthor {
+pub struct CompletionMessageAuthor {
     pub role:String,
     pub name:Option<String>,
     pub metadata:HashMap<String, serde_json::Value>,
 }
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
-pub(crate) struct CompletionMessageContent {
+pub struct CompletionMessageContent {
     pub content_type:String,
     pub parts:Vec<String>,
 }
@@ -196,7 +217,7 @@ pub (crate) struct CompletionMessageFinishDetails {
 }
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
-pub(crate) struct CompletionMessageMeta {
+pub struct CompletionMessageMeta {
     pub citations:Option<Vec<String>>,
     pub gizmo_id:Option<String>,
     pub message_type:Option<String>,
@@ -210,7 +231,7 @@ pub(crate) struct CompletionMessageMeta {
 }
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
-pub(crate) struct CompletionMessage {
+pub struct CompletionMessage {
     pub id:String,
     pub author:CompletionMessageAuthor,
     pub create_time:Option<f64>,
@@ -225,14 +246,15 @@ pub(crate) struct CompletionMessage {
 }
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
-pub(crate) struct CompletionResponse {
-    pub message:CompletionMessage,
+pub struct CompletionResponse {
+    pub message:Option<CompletionMessage>,
     pub conversation_id:String,
     pub error:Option<String>,
 }
+
 impl CompletionResponse {
     pub fn get_finish_reason(&self) -> Option<String> {
-        self.message.metadata.finish_details.as_ref().map(|finish_details| {
+        self.message.as_ref()?.metadata.finish_details.as_ref().map(|finish_details| {
             if let Some(finish_type) = finish_details.r#type.as_ref() {
                 match finish_type.as_str() {
                     "max_tokens" => "length".to_string(),
@@ -245,14 +267,14 @@ impl CompletionResponse {
     }
 }
 
-pub(crate) struct CompletionResult {
-    pub(crate) textbuf: String,
-    pub(crate) conversation_id: String,
-    pub(crate) last_message_id: String,
-    pub(crate) finish_reason:Option<String>,
+pub struct CompletionResult {
+    pub textbuf: String,
+    pub conversation_id: String,
+    pub last_message_id: String,
+    pub finish_reason:Option<String>,
 }
 
-pub(crate) struct CompletionStream {
+pub struct CompletionStream {
     response_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     buffer: BytesMut,
 }
@@ -339,7 +361,7 @@ fn build_req(url:&str, device_id:&str, token:Option<&str>, state:StateRef) -> Re
     }    
 }
 
-pub(crate) async fn alloc_session(state: StateRef) -> Result<Session, Error> {
+pub async fn alloc_session(state: StateRef) -> Result<Session, Error> {
     let start_at = std::time::Instant::now();
     let resp = build_req(OPENAI_SENTINEL_URL, &state.device_id, None, state.clone())?.send().await;
     
@@ -364,13 +386,13 @@ pub(crate) async fn alloc_session(state: StateRef) -> Result<Session, Error> {
 }
 
 
-pub(crate) async fn execute_plain<C, Fut>(
-    state: crate::StateRef,
+pub async fn execute_plain<C, Fut>(
+    state: StateRef,
     messages: Vec<Message>,
     conversion_id: Option<String>,
     parent_message_id: Option<String>,
     hanlde_delta: C,
-) -> Result<CompletionResult, crate::fgpt::Error>
+) -> Result<CompletionResult, Error>
 where
 C: FnOnce(String) -> Fut + std::marker::Copy + 'static,
 Fut: Future<Output = ()> + Send + 'static,
@@ -383,26 +405,34 @@ Fut: Future<Output = ()> + Send + 'static,
     let mut last_message_id = String::new();
     let mut finish_reason = None;
 
-    while let Some(message) = stream.next().await {
-        match message {
-            Ok(crate::fgpt::CompletionEvent::Data(message)) => {
-                if message.message.author.role != "assistant" {
-                    continue;
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(crate::fgpt::CompletionEvent::Data(event)) => {
+                match event.message.as_ref() {
+                    Some(message) => {
+                        if message.author.role != "assistant" {
+                            continue;
+                        }
+                        let text = message.content.parts.join("\n");
+                        if textbuf.len() > text.len() {
+                            continue;
+                        }
+                        finish_reason = event.get_finish_reason();
+                        conversation_id = event.conversation_id.clone();
+                        last_message_id = message.id.clone();
+
+                        let delta_chars = &text[textbuf.len()..];
+                        textbuf = text.clone();
+
+                        hanlde_delta(delta_chars.to_string()).await;
+                    }
+                    _ => {
+                        if event.error.is_some() {
+                            log::error!("Error: {:?}", event.error);
+                            break;
+                        }
+                    }
                 }
-
-                let text = message.message.content.parts.join("\n");
-                if textbuf.len() > text.len() {
-                    continue;
-                }
-
-                finish_reason = message.get_finish_reason();
-                conversation_id = message.conversation_id.clone();
-                last_message_id = message.message.id.clone();
-
-                let delta_chars = &text[textbuf.len()..];
-                textbuf = text.clone();
-
-                hanlde_delta(delta_chars.to_string()).await;
             }
             Ok(crate::fgpt::CompletionEvent::Done) => {
                 break;

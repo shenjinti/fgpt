@@ -6,61 +6,6 @@ mod fgpt;
 #[cfg(feature = "proxy")]
 mod proxy;
 
-#[derive(Clone)]
-pub(crate) struct AppState {
-    pub proxy: Option<String>,
-    pub device_id: String,
-    pub code: bool,
-    pub model: String,
-    pub lang: String,
-    pub qusetion: Option<String>,
-    pub input_file: Option<String>,
-    pub repl: bool,
-    pub dump_stats: bool,
-
-    #[cfg(feature = "proxy")]
-    pub prefix: String,
-    #[cfg(feature = "proxy")]
-    pub serve_addr: String,
-}
-
-impl AppState {
-    pub fn new(args: &Args) -> Self {
-        let env_lang = std::env::var("LANG")
-            .unwrap_or_else(|_| "en-US".to_string())
-            .split('.')
-            .next()
-            .unwrap_or("en-US")
-            .to_string();
-
-        Self {
-            device_id: uuid::Uuid::new_v4().to_string(),
-            code: args.code,
-            qusetion: args.question.clone(),
-            input_file: args.file.clone(),
-            repl: args.repl,
-            dump_stats: args.stats,
-            proxy: args.proxy.clone(),
-            lang: args.lang.as_ref().unwrap_or(&env_lang).clone(),
-            model: args
-                .model
-                .as_ref()
-                .unwrap_or(&"text-davinci-002-render-sha".to_string())
-                .clone(),
-
-            #[cfg(feature = "proxy")]
-            prefix: args.prefix.as_ref().unwrap_or(&"/v1".to_string()).clone(),
-            #[cfg(feature = "proxy")]
-            serve_addr: args
-                .serve
-                .as_ref()
-                .unwrap_or(&"127.0.0.1:4090".to_string())
-                .clone(),
-        }
-    }
-}
-type StateRef = Arc<AppState>;
-
 #[derive(Parser, Debug)]
 #[command(version)]
 pub(crate) struct Args {
@@ -122,6 +67,38 @@ pub(crate) struct Args {
     disable_cors: bool,
 }
 
+impl Into<fgpt::AppState> for Args {
+    fn into(self) -> fgpt::AppState {
+        let env_lang = std::env::var("LANG")
+            .unwrap_or_else(|_| "en-US".to_string())
+            .split('.')
+            .next()
+            .unwrap_or("en-US")
+            .to_string();
+
+        fgpt::AppState {
+            device_id: uuid::Uuid::new_v4().to_string(),
+            code: self.code,
+            qusetion: self.question.clone(),
+            input_file: self.file.clone(),
+            repl: self.repl,
+            dump_stats: self.stats,
+            proxy: self.proxy.clone(),
+            lang: self.lang.as_ref().unwrap_or(&env_lang).clone(),
+            model: self
+                .model
+                .as_ref()
+                .unwrap_or(&"text-davinci-002-render-sha".to_string())
+                .clone(),
+
+            #[cfg(feature = "proxy")]
+            prefix: self.prefix.as_ref().unwrap_or(&"/v1".to_string()).clone(),
+            #[cfg(feature = "proxy")]
+            serve_addr: self.serve.as_ref().unwrap_or(&"".to_string()).clone(),
+        }
+    }
+}
+
 fn init_log(level: &String, is_test: bool, log_file_name: &Option<String>) {
     let target = match log_file_name
         .as_ref()
@@ -173,10 +150,10 @@ pub async fn main() -> Result<(), crate::fgpt::Error> {
         init_log(&args.log_level, false, &args.log_file);
     }
 
-    let state = Arc::new(AppState::new(&args));
+    let state: fgpt::StateRef = Arc::new(args.into());
 
     #[cfg(feature = "proxy")]
-    if args.serve.is_some() {
+    if state.serve_addr != "" {
         return proxy::serve(state).await;
     }
 
