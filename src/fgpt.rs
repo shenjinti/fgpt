@@ -1,8 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Local};
-use futures::StreamExt;
-use futures::{stream::Stream, Future};
+use futures::stream::Stream;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use reqwest::{
@@ -14,6 +13,8 @@ use reqwest::{
 use rustyline::error::ReadlineError;
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use sha3::Digest;
+use std::cell::RefCell;
+use std::time::SystemTime;
 use std::{
     collections::HashMap,
     fmt,
@@ -94,7 +95,7 @@ impl fmt::Display for Error {
 
 #[derive(Debug)]
 pub struct Session {
-    pub start_at: std::time::Instant,
+    pub start_at: SystemTime,
     pub token: String,
     pub proof_seed: String,
     pub proof_difficulty: String,
@@ -154,8 +155,7 @@ pub struct CompletionRequest {
     pub websocket_request_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_message_id: Option<String>,
+    pub parent_message_id: String,
     pub timezone_offset_min: i32,
     pub history_and_training_disabled: bool,
 }
@@ -181,7 +181,8 @@ impl CompletionRequest {
             },
             websocket_request_id: uuid::Uuid::new_v4().to_string(),
             conversation_id,
-            parent_message_id,
+            parent_message_id: parent_message_id
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             timezone_offset_min: offset_minutes,
             history_and_training_disabled: false,
         }
@@ -214,9 +215,32 @@ impl CompletionRequest {
             let resp_body = resp.text().await?;
             return Err(Error::Reqwest(resp_body));
         }
+
+        let tokenizer = gpt_tokenizer::Default::new();
+        let prompt_tokens = self
+            .messages
+            .iter()
+            .map(|message| tokenizer.encode(&message.content).len() as i32)
+            .sum();
+
+        let completion_id = rand::thread_rng()
+            .sample_iter(&rand::distributions::Alphanumeric)
+            .take(28)
+            .map(char::from)
+            .collect::<String>();
+
         Ok(CompletionStream {
             response_stream: Box::pin(resp.bytes_stream()),
             buffer: BytesMut::new(),
+            tokenizer,
+            prompt_tokens,
+            completion_tokens: RefCell::new(0),
+            textbuf: RefCell::new(String::new()),
+            conversation_id: RefCell::new(None),
+            last_message_id: RefCell::new(None),
+            finish_reason: RefCell::new(None),
+            request_id: format!("chatcmpl-{}", completion_id),
+            start_at: SystemTime::now(),
         })
     }
 }
@@ -228,6 +252,7 @@ pub enum CompletionEvent {
     Heartbeat,
     #[allow(unused)]
     Text(String),
+    Error(String),
 }
 
 impl From<&BytesMut> for CompletionEvent {
@@ -305,6 +330,8 @@ pub struct CompletionResponse {
     pub message: Option<CompletionMessage>,
     pub conversation_id: String,
     pub error: Option<String>,
+    #[serde(skip)]
+    pub delta_chars: Option<String>,
 }
 
 impl CompletionResponse {
@@ -327,16 +354,71 @@ impl CompletionResponse {
     }
 }
 
-pub struct CompletionResult {
-    pub textbuf: String,
-    pub conversation_id: String,
-    pub last_message_id: String,
-    pub finish_reason: Option<String>,
-}
-
 pub struct CompletionStream {
     response_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     buffer: BytesMut,
+    tokenizer: gpt_tokenizer::Default,
+    pub prompt_tokens: i32,
+    pub completion_tokens: RefCell<i32>,
+    pub textbuf: RefCell<String>,
+    pub conversation_id: RefCell<Option<String>>,
+    pub last_message_id: RefCell<Option<String>>,
+    pub finish_reason: RefCell<Option<String>>,
+    pub request_id: String,
+    pub start_at: SystemTime,
+}
+
+impl CompletionStream {
+    pub fn total_tokens(&self) -> i32 {
+        self.prompt_tokens + *self.completion_tokens.borrow()
+    }
+
+    fn get_next_event(self: &mut Self) -> Option<CompletionEvent> {
+        if let Some(pos) = self.buffer.windows(2).position(|window| window == b"\n\n") {
+            let mut line = self.buffer.split_to(pos + 2);
+            line.truncate(pos);
+
+            let line_str = String::from_utf8_lossy(&line).to_string();
+            let line_str = line_str.strip_prefix("data: ").unwrap_or(&line_str);
+            if line_str == "[DONE]" {
+                return Some(CompletionEvent::Done);
+            }
+            let heartbeat_re =
+                regex::Regex::new(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.\d{6}$").unwrap();
+            if heartbeat_re.is_match(line_str) {
+                return Some(CompletionEvent::Heartbeat);
+            }
+
+            let mut resp = serde_json::from_str::<CompletionResponse>(line_str).ok()?;
+            match resp.message.as_ref() {
+                Some(message) => {
+                    if message.author.role != "assistant" {
+                        return None;
+                    }
+                    let text = message.content.parts.join("\n");
+                    if self.textbuf.borrow().len() > text.len() {
+                        return None;
+                    }
+                    resp.delta_chars = Some(text[self.textbuf.borrow().len()..].to_string());
+                    *self.conversation_id.borrow_mut() = Some(resp.conversation_id.clone());
+                    *self.last_message_id.borrow_mut() = Some(message.id.clone());
+                    *self.finish_reason.borrow_mut() = resp.get_finish_reason();
+                    *self.textbuf.borrow_mut() = text.clone();
+
+                    *self.completion_tokens.borrow_mut() =
+                        self.tokenizer.encode(&text).len() as i32;
+                    return Some(CompletionEvent::Data(resp));
+                }
+                _ => match resp.error.as_ref() {
+                    Some(error) => {
+                        return Some(CompletionEvent::Error(error.clone()));
+                    }
+                    None => {}
+                },
+            }
+        }
+        None
+    }
 }
 
 impl Stream for CompletionStream {
@@ -347,29 +429,23 @@ impl Stream for CompletionStream {
             match self.response_stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(data))) => {
                     self.buffer.extend_from_slice(&data);
-                    log::debug!("<< {:?}", String::from_utf8_lossy(&data));
-                    if let Some(pos) = self.buffer.windows(2).position(|window| window == b"\n\n") {
-                        let mut line = self.buffer.split_to(pos + 2);
-                        line.truncate(pos);
-                        return Poll::Ready(Some(Ok(CompletionEvent::from(&line))));
+                    match self.get_next_event() {
+                        Some(event) => return Poll::Ready(Some(Ok(event))),
+                        None => continue,
                     }
                 }
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
                 Poll::Ready(None) => {
-                    log::debug!("<< None");
                     if !self.buffer.is_empty() {
-                        if let Some(pos) =
-                            self.buffer.windows(2).position(|window| window == b"\n\n")
-                        {
-                            let mut line = self.buffer.split_to(pos + 2);
-                            line.truncate(pos);
-                            return Poll::Ready(Some(Ok(CompletionEvent::from(&line))));
+                        match self.get_next_event() {
+                            Some(event) => return Poll::Ready(Some(Ok(event))),
+                            None => continue,
                         }
                     } else {
                         return Poll::Ready(None);
                     }
                 }
-                Poll::Pending => continue,
+                Poll::Pending => return Poll::Pending,
             }
         }
     }
@@ -434,7 +510,7 @@ fn build_req(
 }
 
 pub async fn alloc_session(state: StateRef) -> Result<Session, Error> {
-    let start_at = std::time::Instant::now();
+    let start_at = SystemTime::now();
     let resp = build_req(
         OPENAI_SENTINEL_URL,
         &state.device_id,
@@ -460,7 +536,7 @@ pub async fn alloc_session(state: StateRef) -> Result<Session, Error> {
 
     log::debug!(
         "alloc session: {} ms, proxy: {:?} -> {:?}",
-        start_at.elapsed().as_millis(),
+        start_at.elapsed().unwrap().as_millis(),
         state.proxy,
         data,
     );
@@ -471,70 +547,6 @@ pub async fn alloc_session(state: StateRef) -> Result<Session, Error> {
         proof_seed: data.proofofwork.seed,
         proof_difficulty: data.proofofwork.difficulty,
         device_id: state.device_id.clone(),
-    })
-}
-
-pub async fn execute_plain<C, Fut>(
-    state: StateRef,
-    messages: Vec<Message>,
-    conversion_id: Option<String>,
-    parent_message_id: Option<String>,
-    hanlde_delta: C,
-) -> Result<CompletionResult, Error>
-where
-    C: FnOnce(String) -> Fut + std::marker::Copy + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
-{
-    let req = CompletionRequest::new(state.clone(), messages, conversion_id, parent_message_id);
-    let mut stream = req.stream(state.clone()).await?;
-
-    let mut textbuf = String::new();
-    let mut conversation_id = String::new();
-    let mut last_message_id = String::new();
-    let mut finish_reason = None;
-
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(crate::fgpt::CompletionEvent::Data(event)) => match event.message.as_ref() {
-                Some(message) => {
-                    if message.author.role != "assistant" {
-                        continue;
-                    }
-                    let text = message.content.parts.join("\n");
-                    if textbuf.len() > text.len() {
-                        continue;
-                    }
-                    finish_reason = event.get_finish_reason();
-                    conversation_id = event.conversation_id.clone();
-                    last_message_id = message.id.clone();
-
-                    let delta_chars = &text[textbuf.len()..];
-                    textbuf = text.clone();
-
-                    hanlde_delta(delta_chars.to_string()).await;
-                }
-                _ => {
-                    if event.error.is_some() {
-                        log::error!("Error: {:?}", event.error);
-                        break;
-                    }
-                }
-            },
-            Ok(crate::fgpt::CompletionEvent::Done) => {
-                break;
-            }
-            Ok(_) => {}
-            Err(e) => {
-                log::error!("{:?}", e);
-                break;
-            }
-        }
-    }
-    Ok(CompletionResult {
-        textbuf,
-        conversation_id,
-        last_message_id,
-        finish_reason,
     })
 }
 

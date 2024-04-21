@@ -1,15 +1,15 @@
 # A free reverse proxy and CLI tool for OpenAI GPT-3.5-turbo
 
-**[WIP]**
 It allows you to use the GPT-3.5 API without needing to sign up for an API key or pay for usage.
+> OpenAI GPT-3.5-turbo is free to use, without any account or API key
+> DON'T USE IN PRODUCTION, ONLY FOR PERSONAL USE/TESTING
 
 ## Features
 
-- [x] REPL mode, you can input questions and get answers interactively
-- [x] Reverse proxy mode, you can use the GPT-3.5 API without needing to sign up for an API key or pay for usage
-- [x] CLI mode, with shell pipe, file input, code output, etc.
-- [x] Support https proxy
-
+- [x] **REPL** mode, you can input questions and get answers interactively
+- [x] **Reverse proxy mode**, you can use the OpenAI OpenAPI with a local server
+- [x] **CLI mode**, with shell pipe, file input, code output, etc.
+- [x] Support https proxy and socks5 proxy
 
 ## Download precompiled binary
 
@@ -80,8 +80,7 @@ docker run -it --rm shenjinti/fgpt "Linux command to list files in a directory"
 
 ## How to use Reverse Proxy
 
-**[WIP]**
-ChatGPT API Free Reverse Proxy, offering free self-hosted API access to ChatGPT.
+Offering free self-hosted API access to ChatGPT. This is useful if you want to use the OpenAI API without needing to sign up for an API key.
 
 ### 1. Start the server
 
@@ -107,3 +106,13 @@ completion = openai.chat.completions.create(
 
 print(completion.choices[0].message.content)
 ```
+
+or test with curl:
+
+```bash
+curl -X POST -H "Content-Type: application/json" -d '{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"Write a javascript simple code"}], "stream":true}' http://127.0.0.1:4090/v1/chat/completions
+ ```
+
+```bash
+curl -X POST -H "Content-Type: application/json" -d '{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"Write a javascript simple code"}]}' http://127.0.0.1:4090/v1/chat/completions
+ ```

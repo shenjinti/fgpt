@@ -1,11 +1,11 @@
-use crate::fgpt::{self, Message};
+use crate::fgpt::{self, CompletionEvent, CompletionRequest, Message};
+use futures::StreamExt;
 use rustyline::highlight::Highlighter;
 use rustyline::{error::ReadlineError, Editor};
 use rustyline::{Completer, Helper, Highlighter, Hinter, Validator};
 use std::borrow::Cow;
 use std::io::Write;
 use std::io::{IsTerminal, Read};
-use tokio::select;
 
 #[derive(Default)]
 struct PromptHighlighter {}
@@ -92,27 +92,44 @@ pub async fn run_repl(state: fgpt::StateRef) -> Result<(), fgpt::Error> {
                     content_type: Some("text".to_string()),
                 });
 
-                select! {
-                    r = crate::fgpt::execute_plain(
-                        state.clone(),
-                        messages,
-                        conversation_id.clone(),
-                        last_message_id.clone(),
-                         |delta| async move {
-                            print!("{}", delta);
-                            std::io::stdout().flush().ok();
-                        },
-                    ) => {
-                        let r = r?;
-                        conversation_id = Some(r.conversation_id);
-                        last_message_id = Some(r.last_message_id);
-                        println!();
+                let req = CompletionRequest::new(
+                    state.clone(),
+                    messages,
+                    conversation_id.clone(),
+                    last_message_id.clone(),
+                );
+
+                let mut stream = match req.stream(state.clone()).await {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        log::error!("{}", e);
+                        continue;
                     }
-                    _ = tokio::signal::ctrl_c() => {
-                        log::info!("Ctrl-C pressed. Exiting.");
-                        break;
+                };
+
+                while let Some(Ok(event)) = stream.next().await {
+                    match event {
+                        CompletionEvent::Data(data) => {
+                            data.delta_chars
+                                .map(|c| std::io::stdout().write(c.as_bytes()));
+                        }
+                        CompletionEvent::Error(reason) => {
+                            log::error!("{}", reason);
+                            break;
+                        }
+                        CompletionEvent::Done => {
+                            conversation_id = stream.conversation_id.borrow().clone();
+                            last_message_id = stream.last_message_id.borrow().clone();
+                            break;
+                        }
+                        CompletionEvent::Text(text) => {
+                            print!("{}", text);
+                        }
+                        _ => {}
                     }
+                    std::io::stdout().flush().ok();
                 }
+                println!();
             }
             Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
                 break;
@@ -170,37 +187,41 @@ pub async fn run(state: fgpt::StateRef) -> Result<(), fgpt::Error> {
 
     messages.iter().for_each(|m| log::debug!("{:?}", m));
 
-    let tokenizer = gpt_tokenizer::Default::new();
-    let prompt_tokens: usize = messages
-        .iter()
-        .map(|message| tokenizer.encode(&message.content).len())
-        .sum();
-
     let start_at = std::time::Instant::now();
-    let r = crate::fgpt::execute_plain(
-        state.clone(),
-        messages,
-        None,
-        Some(uuid::Uuid::new_v4().to_string()),
-        |delta| async move {
-            print!("{}", delta);
-            std::io::stdout().flush().ok();
-        },
-    )
-    .await?;
+    let req = CompletionRequest::new(state.clone(), messages, None, None);
+    let mut stream = req.stream(state.clone()).await?;
 
+    while let Some(Ok(event)) = stream.next().await {
+        match event {
+            CompletionEvent::Data(data) => {
+                data.delta_chars
+                    .map(|c| std::io::stdout().write(c.as_bytes()));
+            }
+            CompletionEvent::Error(reason) => {
+                log::error!("{}", reason);
+                break;
+            }
+            CompletionEvent::Done => {
+                break;
+            }
+            CompletionEvent::Text(text) => {
+                print!("{}", text);
+            }
+            _ => {}
+        }
+        std::io::stdout().flush().ok();
+    }
     println!();
 
     let elapsed = start_at.elapsed().as_secs_f64();
-    let completion_tokens = tokenizer.encode(&r.textbuf).len();
-    let total_tokens = completion_tokens + prompt_tokens;
+    let completion_tokens = *stream.completion_tokens.borrow();
+    let total_tokens = completion_tokens + stream.prompt_tokens;
     let throughput = completion_tokens as f64 / elapsed as f64;
-
     let stats_text = format!(
         "Total tokens: \x1b[32m{}\x1b[0m, completion tokens: \x1b[32m{}\x1b[0m, prompt tokens: \x1b[32m{}\x1b[0m, elapsed: \x1b[33m{:.1}\x1b[0m secs, throughput: \x1b[33m{:.2}\x1b[0m tps",
         total_tokens,
         completion_tokens,
-        prompt_tokens,
+        stream.prompt_tokens,
         elapsed,
         throughput
     );
