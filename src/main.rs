@@ -150,7 +150,7 @@ pub async fn main() -> Result<(), crate::fgpt::Error> {
         init_log(&args.log_level, false, &args.log_file);
     }
 
-    let state: fgpt::StateRef = Arc::new(args.into());
+    let state: fgpt::AppStateRef = Arc::new(args.into());
 
     #[cfg(feature = "proxy")]
     if state.serve_addr != "" {

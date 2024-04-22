@@ -10,7 +10,6 @@ use reqwest::{
     },
     Client, Proxy,
 };
-use rustyline::error::ReadlineError;
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use sha3::Digest;
 use std::cell::RefCell;
@@ -26,7 +25,9 @@ use std::{
 const OPENAI_ENDPOINT: &str = "https://chat.openai.com";
 const OPENAI_API_URL: &str = "https://chat.openai.com/backend-anon/conversation";
 const OPENAI_SENTINEL_URL: &str = "https://chat.openai.com/backend-anon/sentinel/chat-requirements";
-const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36";
+const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0";
+const CH_UA: &str = r#""Not A(Brand";v="99", "Microsoft Edge";v="121", "Chromium";v="121""#;
+const CH_PLATFORM: &str = r#""macOS""#;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -46,7 +47,7 @@ pub struct AppState {
     pub serve_addr: String,
 }
 
-pub type StateRef = Arc<AppState>;
+pub type AppStateRef = Arc<AppState>;
 
 #[derive(Debug)]
 pub enum Error {
@@ -70,16 +71,6 @@ impl From<reqwest::Error> for Error {
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
         Error::Serde(e.to_string())
-    }
-}
-
-#[cfg(feature = "cli")]
-impl From<ReadlineError> for Error {
-    fn from(e: ReadlineError) -> Self {
-        match e {
-            ReadlineError::Eof => Error::Io("EOF".to_string()),
-            _ => Error::Io(e.to_string()),
-        }
     }
 }
 
@@ -162,7 +153,7 @@ pub struct CompletionRequest {
 
 impl CompletionRequest {
     pub fn new(
-        state: StateRef,
+        state: AppStateRef,
         messages: Vec<Message>,
         conversation_id: Option<String>,
         parent_message_id: Option<String>,
@@ -188,7 +179,7 @@ impl CompletionRequest {
         }
     }
 
-    pub async fn stream(&self, state: StateRef) -> Result<CompletionStream, Error> {
+    pub async fn stream(&self, state: AppStateRef) -> Result<CompletionStream, Error> {
         let start_at = std::time::Instant::now();
         let session = alloc_session(state.clone()).await?;
         let builder = build_req(
@@ -457,7 +448,7 @@ fn build_req(
     token: Option<&str>,
     seed: Option<&str>,
     difficulty: Option<&str>,
-    state: StateRef,
+    state: AppStateRef,
 ) -> Result<reqwest::RequestBuilder, reqwest::Error> {
     let client = match state.proxy.as_ref() {
         Some(proxy) => match Proxy::all(proxy) {
@@ -486,12 +477,9 @@ fn build_req(
         .header(REFERER, OPENAI_ENDPOINT)
         .header(ORIGIN, OPENAI_ENDPOINT)
         .header(CONTENT_TYPE, "application/json")
-        .header(
-            "sec-ch-ua",
-            "\"Google Chrome\";v=\"123\", \"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"123\"",
-        )
+        .header("sec-ch-ua", CH_UA)
         .header("sec-ch-ua-mobile", "?0")
-        .header("sec-ch-ua-platform", "\"Windows\"")
+        .header("sec-ch-ua-platform", CH_PLATFORM)
         .header("sec-fetch-dest", "empty")
         .header("sec-fetch-mode", "cors")
         .header("sec-fetch-site", "same-origin")
@@ -509,7 +497,7 @@ fn build_req(
     }
 }
 
-pub async fn alloc_session(state: StateRef) -> Result<Session, Error> {
+pub async fn alloc_session(state: AppStateRef) -> Result<Session, Error> {
     let start_at = SystemTime::now();
     let resp = build_req(
         OPENAI_SENTINEL_URL,

@@ -7,7 +7,7 @@ RUN cargo build --release
 FROM debian:bookworm
 ENV DEBIAN_FRONTEND noninteractive
 ENV LANG C.UTF-8
-LABEL maintainer="shenjindi@ruzhila.cn"
+LABEL maintainer="shenjindi@fourz.cn"
 
 COPY --from=builder /build/target/release/fgpt /bin/
 

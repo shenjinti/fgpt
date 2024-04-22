@@ -1,4 +1,4 @@
-use crate::fgpt::{self, CompletionRequest, StateRef};
+use crate::fgpt::{self, AppStateRef, CompletionEvent, CompletionRequest, Message};
 use axum::{
     extract::State,
     response::{sse::Event, IntoResponse, Response, Sse},
@@ -16,12 +16,12 @@ use std::{
 
 #[derive(Deserialize, Debug, Serialize, Default)]
 struct OpenAPIClientRequest {
-    messages: Vec<crate::fgpt::Message>,
+    messages: Vec<Message>,
     stream: Option<bool>,
 }
 
 async fn proxy_completions(
-    State(state): State<StateRef>,
+    State(state): State<AppStateRef>,
     Json(params): Json<OpenAPIClientRequest>,
 ) -> Response {
     log::info!(
@@ -43,7 +43,7 @@ async fn proxy_completions(
 }
 
 async fn handle_proxy_completions(
-    State(state): State<StateRef>,
+    State(state): State<AppStateRef>,
     Json(params): Json<OpenAPIClientRequest>,
 ) -> Result<Response, fgpt::Error> {
     let stream_mode = params.stream.unwrap_or(false);
@@ -58,10 +58,10 @@ async fn handle_proxy_completions(
     if !stream_mode {
         while let Some(Ok(event)) = stream.next().await {
             match event {
-                crate::fgpt::CompletionEvent::Done => {
+                CompletionEvent::Done => {
                     break;
                 }
-                crate::fgpt::CompletionEvent::Error(reason) => {
+                CompletionEvent::Error(reason) => {
                     return Err(fgpt::Error::Io(reason));
                 }
                 _ => {}
@@ -104,7 +104,7 @@ async fn handle_proxy_completions(
         );
 
         log::info!(
-            "sync exec request_id:{} elapsed:{:.2}s throughput:{} tokens:{:.2}",
+            "sync exec request_id:{} elapsed:{:.2}s throughput:{:.2} tokens:{}",
             stream.request_id,
             stream.start_at.elapsed().unwrap().as_secs_f64(),
             *stream.completion_tokens.borrow() as f64
@@ -128,7 +128,7 @@ impl Stream for CompletionToSSEStream {
         let poll = stream.poll_next_unpin(cx);
         match poll {
             Poll::Ready(Some(Ok(event))) => match event {
-                crate::fgpt::CompletionEvent::Data(data) => {
+                CompletionEvent::Data(data) => {
                     let body = json!(
                         {
                             "id": stream.request_id,
@@ -154,7 +154,7 @@ impl Stream for CompletionToSSEStream {
                     let event = Event::default().data(body.to_string());
                     Poll::Ready(Some(Ok(event)))
                 }
-                crate::fgpt::CompletionEvent::Done => {
+                CompletionEvent::Done => {
                     let completion_tokens = *stream.completion_tokens.borrow();
                     let total_tokens = completion_tokens + stream.prompt_tokens;
                     log::info!(
@@ -166,11 +166,11 @@ impl Stream for CompletionToSSEStream {
                     );
                     Poll::Ready(None)
                 }
-                crate::fgpt::CompletionEvent::Error(reason) => {
+                CompletionEvent::Error(reason) => {
                     let body = json!(
                         {
                             "id": stream.request_id,
-                            "created": stream.start_at.duration_since(UNIX_EPOCH).unwrap(),
+                            "created": stream.start_at.duration_since(UNIX_EPOCH).unwrap().as_secs_f64(),
                             "model": "gpt-3.5-turbo",
                             "object": "chat.completion.chunk",
                             "choices": [
@@ -196,7 +196,7 @@ impl Stream for CompletionToSSEStream {
     }
 }
 
-pub async fn serve(state: StateRef) -> Result<(), crate::fgpt::Error> {
+pub async fn serve(state: AppStateRef) -> Result<(), fgpt::Error> {
     let app = Router::new()
         .nest(
             &state.prefix,

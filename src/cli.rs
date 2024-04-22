@@ -7,6 +7,15 @@ use std::borrow::Cow;
 use std::io::Write;
 use std::io::{IsTerminal, Read};
 
+impl From<ReadlineError> for fgpt::Error {
+    fn from(e: ReadlineError) -> Self {
+        match e {
+            ReadlineError::Eof => fgpt::Error::Io("EOF".to_string()),
+            _ => fgpt::Error::Io(e.to_string()),
+        }
+    }
+}
+
 #[derive(Default)]
 struct PromptHighlighter {}
 
@@ -26,7 +35,7 @@ struct PromptHelper {
     highlighter: PromptHighlighter,
 }
 
-pub async fn run_repl(state: fgpt::StateRef) -> Result<(), fgpt::Error> {
+pub async fn run_repl(state: fgpt::AppStateRef) -> Result<(), fgpt::Error> {
     println!("free GPT-3.5 cli tools | 🪐 https://github.com/shenjinti/fgpt");
     println!("💖 To star the repository if you like \x1b[1;32mfgpt\x1b[0m!");
 
@@ -58,6 +67,7 @@ pub async fn run_repl(state: fgpt::StateRef) -> Result<(), fgpt::Error> {
                 let line = line.trim();
                 match line {
                     "/exit" => break,
+                    "/bye" => break,
                     "/help" => {
                         help_texts.iter().for_each(|text| println!("{}", text));
                         continue;
@@ -143,7 +153,7 @@ pub async fn run_repl(state: fgpt::StateRef) -> Result<(), fgpt::Error> {
     Ok(())
 }
 
-pub async fn run(state: fgpt::StateRef) -> Result<(), fgpt::Error> {
+pub async fn run(state: fgpt::AppStateRef) -> Result<(), fgpt::Error> {
     if state.repl || (state.qusetion.is_none() && state.input_file.is_none()) {
         return run_repl(state).await;
     }
