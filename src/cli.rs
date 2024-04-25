@@ -141,7 +141,10 @@ pub async fn run_repl(state: fgpt::AppStateRef) -> Result<(), fgpt::Error> {
                 }
                 println!();
             }
-            Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
+            Err(ReadlineError::Interrupted) => {
+                continue;
+            }
+            Err(ReadlineError::Eof) => {
                 break;
             }
             Err(err) => {
